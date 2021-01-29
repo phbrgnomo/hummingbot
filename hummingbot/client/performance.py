@@ -3,11 +3,14 @@ from dataclasses import dataclass
 from typing import (
     Dict,
     Optional,
-    List
+    List,
+    Any
 )
 from hummingbot.model.trade_fill import TradeFill
+from hummingbot.core.utils.market_price import get_last_price
 
 s_decimal_0 = Decimal("0")
+s_decimal_nan = Decimal("NaN")
 
 
 @dataclass
@@ -40,16 +43,28 @@ class PerformanceMetrics:
     hold_value: Decimal = s_decimal_0
     cur_value: Decimal = s_decimal_0
     trade_pnl: Decimal = s_decimal_0
-    fee_paid: Decimal = s_decimal_0
-    fee_token: str = ""
+
+    fee_in_quote: Decimal = s_decimal_0
     total_pnl: Decimal = s_decimal_0
     return_pct: Decimal = s_decimal_0
 
+    def __init__(self):
+        # fees is a dictionary of token and total fee amount paid in that token.
+        self.fees: Dict[str, Decimal] = {}
 
-def calculate_performance_metrics(trading_pair: str,
-                                  trades: List[TradeFill],
-                                  current_balances: Dict[str, Decimal],
-                                  current_price: Optional[Decimal]) -> PerformanceMetrics:
+
+async def calculate_performance_metrics(exchange: str,
+                                        trading_pair: str,
+                                        trades: List[Any],
+                                        current_balances: Dict[str, Decimal]) -> PerformanceMetrics:
+    """
+    Calculates PnL, fees, Return % and etc...
+    :param exchange: the exchange or connector name
+    :param trading_pair: the trading market to get performance metrics
+    :param trades: the list of TradeFill or Trade object
+    :param current_balances: current user account balance
+    :return: A PerformanceMetrics object
+    """
 
     def divide(value, divisor):
         value = Decimal(str(value))
@@ -87,7 +102,7 @@ def calculate_performance_metrics(trading_pair: str,
     perf.start_quote_bal = perf.cur_quote_bal - perf.tot_vol_quote
 
     perf.start_price = Decimal(str(trades[0].price))
-    perf.cur_price = current_price
+    perf.cur_price = await get_last_price(exchange.replace("_PaperTrade", ""), trading_pair)
     if perf.cur_price is None:
         perf.cur_price = Decimal(str(trades[-1].price))
     perf.start_base_ratio_pct = divide(perf.start_base_bal * perf.start_price,
@@ -98,20 +113,44 @@ def calculate_performance_metrics(trading_pair: str,
     perf.hold_value = (perf.start_base_bal * perf.cur_price) + perf.start_quote_bal
     perf.cur_value = (perf.cur_base_bal * perf.cur_price) + perf.cur_quote_bal
     perf.trade_pnl = perf.cur_value - perf.hold_value
-    fee_paid = 0
-    perf.fee_token = quote
-    if trades[0].trade_fee.get("percent", None) is not None and trades[0].trade_fee["percent"] > 0:
-        fee_paid = sum(t.price * t.amount * t.trade_fee["percent"] for t in trades)
-    elif trades[0].trade_fee.get("flat_fees", []):
-        perf.fee_token = trades[0].trade_fee["flat_fees"][0]["asset"]
-        fee_paid = sum(f["amount"] for t in trades for f in t.trade_fee.get("flat_fees", []))
-    perf.fee_paid = Decimal(str(fee_paid))
-    perf.total_pnl = perf.trade_pnl - perf.fee_paid if perf.fee_token == quote else perf.trade_pnl
+
+    for trade in trades:
+        if type(trade) is TradeFill:
+            if trade.trade_fee.get("percent") is not None and trade.trade_fee["percent"] > 0:
+                if quote not in perf.fees:
+                    perf.fees[quote] = s_decimal_0
+                perf.fees[quote] += Decimal(trade.price * trade.amount * trade.trade_fee["percent"])
+            for flat_fee in trade.trade_fee.get("flat_fees", []):
+                if flat_fee["asset"] not in perf.fees:
+                    perf.fees[flat_fee["asset"]] = s_decimal_0
+                perf.fees[flat_fee["asset"]] += Decimal(flat_fee["amount"])
+        else:  # assume this is Trade object
+            if trade.trade_fee.percent > 0:
+                if quote not in perf.fees:
+                    perf.fees[quote] = s_decimal_0
+                perf.fees[quote] += (trade.price * trade.order_amount) * trade.trade_fee.percent
+            for flat_fee in trade.trade_fee.flat_fees:
+                if flat_fee[0] not in perf.fees:
+                    perf.fees[flat_fee[0]] = s_decimal_0
+                perf.fees[flat_fee[0]] += flat_fee[1]
+
+    for fee_token, fee_amount in perf.fees.items():
+        if fee_token == quote:
+            perf.fee_in_quote += fee_amount
+        else:
+            last_price = await get_last_price(exchange, f"{fee_token}-{quote}")
+            if last_price is not None:
+                perf.fee_in_quote += fee_amount * last_price
+
+    perf.total_pnl = perf.trade_pnl - perf.fee_in_quote
     perf.return_pct = divide(perf.total_pnl, perf.hold_value)
+
     return perf
 
 
 def smart_round(value: Decimal, precision: Optional[int] = None) -> Decimal:
+    if value is None or value.is_nan():
+        return value
     if precision is not None:
         precision = 1 / (10 ** precision)
         return Decimal(str(value)).quantize(Decimal(str(precision)))
@@ -125,5 +164,5 @@ def smart_round(value: Decimal, precision: Optional[int] = None) -> Decimal:
     elif Decimal("0.01") > abs(value) > Decimal("0.0001"):
         step = Decimal("0.00001")
     elif Decimal("0.0001") > abs(value) > s_decimal_0:
-        step = Decimal("0.000001")
+        step = Decimal("0.00000001")
     return (value // step) * step
