@@ -1,30 +1,45 @@
 #!/usr/bin/env python
 
 connector_status = {
+    'ascend_ex': 'green',
+    'balancer': 'green',
+    'beaxy': 'green',
     'binance': 'green',
     'binance_perpetual': 'yellow',
     'binance_perpetual_testnet': 'yellow',
     'binance_us': 'yellow',
-    'bitfinex': 'green',
+    'bitfinex': 'yellow',
     'bittrex': 'yellow',
+    'blocktane': 'yellow',
     'celo': 'green',
-    'coinbase_pro': 'green',
-    'crypto_com': 'yellow',
-    'dydx': 'yellow',
-    'eterbase': 'red',
+    'coinbase_pro': 'yellow',
+    'coinzoom': 'yellow',
+    'crypto_com': 'green',
+    'digifinex': "yellow",
+    'dydx': 'green',
+    'dydx_perpetual': 'yellow',
     'ethereum': 'red',
+    'ftx': 'green',
+    'hitbtc': 'green',
     'huobi': 'green',
-    'kraken': 'yellow',
-    'kucoin': 'green',
+    'gate_io': 'yellow',
+    'kraken': 'green',
+    'kucoin': 'yellow',
+    'k2': 'red',
     'liquid': 'green',
     'loopring': 'yellow',
-    'okex': 'red',
-    'terra': 'yellow'
+    'ndax': 'yellow',
+    'ndax_testnet': 'yellow',
+    'okex': 'yellow',
+    'perpetual_finance': 'yellow',
+    'probit': 'yellow',
+    'probit_kr': 'yellow',
+    'terra': 'green',
+    'uniswap': 'green'
 }
 
 warning_messages = {
-    'eterbase': 'Hack investigation and security audit is ongoing for Eterbase. Trading is currently disabled.',
-    'okex': 'OKEx is reportedly being investigated by Chinese authorities and has stopped withdrawals.'
+    'eterbase': 'Hack investigation and security audit is ongoing for Eterbase. Trading is currently disabled.'
 }
 
 

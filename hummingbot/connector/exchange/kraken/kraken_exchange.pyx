@@ -25,12 +25,12 @@ from hummingbot.core.utils.async_utils import (
 )
 from hummingbot.connector.exchange.kraken.kraken_api_order_book_data_source import KrakenAPIOrderBookDataSource
 from hummingbot.connector.exchange.kraken.kraken_auth import KrakenAuth
-import hummingbot.connector.exchange.kraken.kraken_constants as constants
 from hummingbot.connector.exchange.kraken.kraken_utils import (
     convert_from_exchange_symbol,
     convert_from_exchange_trading_pair,
     convert_to_exchange_trading_pair,
-    split_to_base_quote)
+    split_to_base_quote,
+    is_dark_pool)
 from hummingbot.logger import HummingbotLogger
 from hummingbot.core.event.events import (
     MarketEvent,
@@ -198,7 +198,8 @@ cdef class KrakenExchange(ExchangeBase):
             asset_pairs_response = await client.get(ASSET_PAIRS_URI)
             asset_pairs_data: Dict[str, Any] = await asset_pairs_response.json()
             asset_pairs: Dict[str, Any] = asset_pairs_data["result"]
-            self._asset_pairs = {pair: details for pair, details in asset_pairs.items() if "." not in pair}
+            self._asset_pairs = {f"{details['base']}-{details['quote']}": details
+                                 for _, details in asset_pairs.items() if not is_dark_pool(details)}
         return self._asset_pairs
 
     async def get_active_exchange_markets(self) -> pd.DataFrame:
@@ -225,13 +226,13 @@ cdef class KrakenExchange(ExchangeBase):
             if order.get("status") == "open":
                 details = order.get("descr")
                 if details.get("ordertype") == "limit":
-                    pair = convert_from_exchange_trading_pair(details.get("pair"))
+                    pair = convert_from_exchange_trading_pair(details.get("pair"), tuple((await self.asset_pairs()).keys()))
                     (base, quote) = self.split_trading_pair(pair)
                     vol_locked = Decimal(order.get("vol", 0)) - Decimal(order.get("vol_exec", 0))
                     if details.get("type") == "sell":
-                        locked[base] += vol_locked
+                        locked[convert_from_exchange_symbol(base)] += vol_locked
                     elif details.get("type") == "buy":
-                        locked[quote] += vol_locked * Decimal(details.get("price"))
+                        locked[convert_from_exchange_symbol(quote)] += vol_locked * Decimal(details.get("price"))
 
         for asset_name, balance in balances.items():
             cleaned_name = convert_from_exchange_symbol(asset_name).upper()
@@ -257,22 +258,12 @@ cdef class KrakenExchange(ExchangeBase):
                           object amount,
                           object price):
         """
-        cdef:
-            object maker_trade_fee = Decimal("0.0016")
-            object taker_trade_fee = Decimal("0.0026")
-            str trading_pair = base_currency + quote_currency
-
-        if order_type is OrderType.LIMIT and fee_overrides_config_map["kraken_maker_fee"].value is not None:
-            return TradeFee(percent=fee_overrides_config_map["kraken_maker_fee"].value / Decimal("100"))
-        if order_type is OrderType.MARKET and fee_overrides_config_map["kraken_taker_fee"].value is not None:
-            return TradeFee(percent=fee_overrides_config_map["kraken_taker_fee"].value / Decimal("100"))
-
-        if trading_pair in self._trade_fees:
-            maker_trade_fee, taker_trade_fee = self._trade_fees.get(trading_pair)
-        return TradeFee(percent=maker_trade_fee if order_type is OrderType.LIMIT else taker_trade_fee)
+        To get trading fee, this function is simplified by using fee override configuration. Most parameters to this
+        function are ignore except order_type. Use OrderType.LIMIT_MAKER to specify you want trading fee for
+        maker order.
         """
         is_maker = order_type is OrderType.LIMIT_MAKER
-        return estimate_fee("kraken", is_maker)
+        return TradeFee(percent=self.estimate_fee_pct(is_maker))
 
     async def _update_trading_rules(self):
         cdef:
@@ -290,24 +281,45 @@ cdef class KrakenExchange(ExchangeBase):
         """
         Example:
         {
-            "ADAETH":{
-                "altname":"ADAETH",
-                "wsname":"ADA/ETH",
-                "aclass_base":"currency",
-                "base":"ADA",
-                "aclass_quote":"currency",
-                "quote":"XETH",
-                "lot":"unit",
-                "pair_decimals":7,
-                "lot_decimals":8,
-                "lot_multiplier":1,
-                "leverage_buy":[],
-                "leverage_sell":[],
-                "fees":[[0,0.26],[50000,0.24],[100000,0.22],[250000,0.2],[500000,0.18],[1000000,0.16],[2500000,0.14],[5000000,0.12],[10000000,0.1]],
-                "fees_maker":[[0,0.16],[50000,0.14],[100000,0.12],[250000,0.1],[500000,0.08],[1000000,0.06],[2500000,0.04],[5000000,0.02],[10000000,0]],
-                "fee_volume_currency":"ZUSD",
-                "margin_call":80,
-                "margin_stop":40
+            "XBTUSDT": {
+              "altname": "XBTUSDT",
+              "wsname": "XBT/USDT",
+              "aclass_base": "currency",
+              "base": "XXBT",
+              "aclass_quote": "currency",
+              "quote": "USDT",
+              "lot": "unit",
+              "pair_decimals": 1,
+              "lot_decimals": 8,
+              "lot_multiplier": 1,
+              "leverage_buy": [2, 3],
+              "leverage_sell": [2, 3],
+              "fees": [
+                [0, 0.26],
+                [50000, 0.24],
+                [100000, 0.22],
+                [250000, 0.2],
+                [500000, 0.18],
+                [1000000, 0.16],
+                [2500000, 0.14],
+                [5000000, 0.12],
+                [10000000, 0.1]
+              ],
+              "fees_maker": [
+                [0, 0.16],
+                [50000, 0.14],
+                [100000, 0.12],
+                [250000, 0.1],
+                [500000, 0.08],
+                [1000000, 0.06],
+                [2500000, 0.04],
+                [5000000, 0.02],
+                [10000000, 0]
+              ],
+              "fee_volume_currency": "ZUSD",
+              "margin_call": 80,
+              "margin_stop": 40,
+              "ordermin": "0.0002"
             }
         }
         """
@@ -317,7 +329,7 @@ cdef class KrakenExchange(ExchangeBase):
             try:
                 base, quote = split_to_base_quote(trading_pair)
                 base = convert_from_exchange_symbol(base)
-                min_order_size = Decimal(constants.BASE_ORDER_MIN.get(base, 0))
+                min_order_size = Decimal(rule.get('ordermin', 0))
                 min_price_increment = Decimal(f"1e-{rule.get('pair_decimals')}")
                 min_base_amount_increment = Decimal(f"1e-{rule.get('lot_decimals')}")
                 retval.append(
@@ -492,13 +504,7 @@ cdef class KrakenExchange(ExchangeBase):
                                                               tracked_order.order_type,
                                                               Decimal(trade.get("price")),
                                                               Decimal(trade.get("vol")),
-                                                              self.c_get_fee(
-                                                                  tracked_order.base_asset,
-                                                                  tracked_order.quote_asset,
-                                                                  tracked_order.order_type,
-                                                                  tracked_order.trade_type,
-                                                                  float(Decimal(trade.get("price"))),
-                                                                  float(Decimal(trade.get("vol")))),
+                                                              TradeFee(0.0, [(tracked_order.fee_asset, Decimal((trade.get("fee"))))]),
                                                               trade.get("trade_id")))
 
                         if tracked_order.is_done:
@@ -691,7 +697,7 @@ cdef class KrakenExchange(ExchangeBase):
                                       is_auth_required: bool = False,
                                       request_weight: int = 1,
                                       retry_count = 5,
-                                      retry_interval = 1.0) -> Dict[str, Any]:
+                                      retry_interval = 2.0) -> Dict[str, Any]:
         request_weight = self.API_COUNTER_POINTS.get(path_url, 0)
         if retry_count == 0:
             return await self._api_request(method, path_url, params, data, is_auth_required, request_weight)
@@ -710,7 +716,7 @@ cdef class KrakenExchange(ExchangeBase):
                         if any(response.get("open").values()):
                             return response
                     self.logger().warning(f"Cloudflare error. Attempt {retry_attempt+1}/{retry_count} API command {method}: {path_url}")
-                    await asyncio.sleep(retry_interval)
+                    await asyncio.sleep(retry_interval ** retry_attempt)
                     continue
                 else:
                     raise e
@@ -819,7 +825,6 @@ cdef class KrakenExchange(ExchangeBase):
             TradingRule trading_rule = self._trading_rules[trading_pair]
             str base_currency = self.split_trading_pair(trading_pair)[0]
             str quote_currency = self.split_trading_pair(trading_pair)[1]
-            object buy_fee = self.c_get_fee(base_currency, quote_currency, order_type, TradeType.BUY, amount, price)
 
         decimal_amount = self.c_quantize_order_amount(trading_pair, amount)
         decimal_price = self.c_quantize_order_price(trading_pair, price)

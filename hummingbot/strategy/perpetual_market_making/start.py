@@ -4,10 +4,10 @@ from typing import (
 )
 
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
+from hummingbot.strategy.order_book_asset_price_delegate import OrderBookAssetPriceDelegate
+from hummingbot.strategy.api_asset_price_delegate import APIAssetPriceDelegate
 from hummingbot.strategy.perpetual_market_making import (
     PerpetualMarketMakingStrategy,
-    OrderBookAssetPriceDelegate,
-    APIAssetPriceDelegate
 )
 from hummingbot.strategy.perpetual_market_making.perpetual_market_making_config_map import perpetual_market_making_config_map as c_map
 from hummingbot.connector.exchange.paper_trade import create_paper_trade_market
@@ -28,6 +28,7 @@ def start(self):
         short_profit_taking_spread = c_map.get("short_profit_taking_spread").value / Decimal('100')
         ts_activation_spread = c_map.get("ts_activation_spread").value / Decimal('100')
         ts_callback_rate = c_map.get("ts_callback_rate").value / Decimal('100')
+        stop_loss_spread = c_map.get("stop_loss_spread").value / Decimal('100')
         close_position_order_type = c_map.get("close_position_order_type").value
         minimum_spread = c_map.get("minimum_spread").value / Decimal('100')
         price_ceiling = c_map.get("price_ceiling").value
@@ -73,7 +74,8 @@ def start(self):
 
         strategy_logging_options = PerpetualMarketMakingStrategy.OPTION_LOG_ALL
 
-        self.strategy = PerpetualMarketMakingStrategy(
+        self.strategy = PerpetualMarketMakingStrategy()
+        self.strategy.init_params(
             market_info=MarketTradingPairTuple(*maker_data),
             leverage=leverage,
             position_mode=position_mode,
@@ -86,6 +88,7 @@ def start(self):
             short_profit_taking_spread = short_profit_taking_spread,
             ts_activation_spread = ts_activation_spread,
             ts_callback_rate = ts_callback_rate,
+            stop_loss_spread = stop_loss_spread,
             close_position_order_type = close_position_order_type,
             order_level_spread=order_level_spread,
             order_level_amount=order_level_amount,
